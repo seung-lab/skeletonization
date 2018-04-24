@@ -5,20 +5,20 @@
 import numpy as np
 
 import scipy.io as spio
+from scipy import ndimage
+from scipy.sparse.csgraph import *
+from scipy.sparse import csr_matrix
+
+import networkx as nx
+
 from cloudvolume import CloudVolume
-from dask.distributed import Client
-from dask.distributed import wait
 
 from multiprocessing import Pool
 from functools import partial
 
 import json
 
-from scipy import ndimage
-from scipy.sparse.csgraph import *
-from scipy.sparse import csr_matrix
 from time import time
-
 from os import listdir
 
 
@@ -108,20 +108,20 @@ def extract_points_object(input_dir, object_id, mip_level, chunk_list):
 	return object_points
 
 
-def extract_points_dist(input_dir, object_id, mip_level, chunk_list):
-	t0 = time()
-	client = Client()
+# def extract_points_dist(input_dir, object_id, mip_level, chunk_list):
+# 	t0 = time()
+# 	client = Client()
 
-	n = len(chunk_list)
-	extract = client.map(extract_points_chunk, [input_dir]*n, [object_id]*n, [mip_level]*n, chunk_list)
+# 	n = len(chunk_list)
+# 	extract = client.map(extract_points_chunk, [input_dir]*n, [object_id]*n, [mip_level]*n, chunk_list)
 
-	points_list = client.gather(extract)
+# 	points_list = client.gather(extract)
 
-	object_points = collect_points(points_list)
+# 	object_points = collect_points(points_list)
 
-	t1 = time()
-	print(">>>>> Elapsed time : " + str(np.round(t1-t0, decimals=3)))
-	return object_points
+# 	t1 = time()
+# 	print(">>>>> Elapsed time : " + str(np.round(t1-t0, decimals=3)))
+# 	return object_points
 
 
 def save_points(points_merged, output_file):
@@ -136,12 +136,12 @@ def save_points(points_merged, output_file):
 # Skeleton format
 class Skeleton:
 
-	def __init__(self, nodes=np.array([]), edges=np.array([]), radii=np.array([])):
+	def __init__(self, nodes=np.array([]), edges=np.array([]), radii=np.array([]), root=np.array([])):
 
 		self.nodes = nodes
 		self.edges = edges
 		self.radii = radii
-		
+		self.root = root
 
 # Convert array to point cloud
 def array2point(array, object_id=-1):
@@ -235,7 +235,13 @@ def find_row(array, row):
 			valid[:,i] = array[:,i] == row[i]
 
 		row_loc = np.zeros([array.shape[0],1])
-		row_loc = valid[:,0]*valid[:,1]*valid[:,2]
+
+		if NDIM == 2:
+			row_loc = valid[:,0]*valid[:,1]
+
+		elif NDIM == 3:
+			row_loc = valid[:,0]*valid[:,1]*valid[:,2]
+
 		idx = np.where(row_loc==1)[0]
 
 		if len(idx) == 0:
@@ -307,12 +313,22 @@ def find_path(predecessor, end, start = []):
 
 	pred = end
 	while True:
-		pred = predecessor[pred]
+		if len(predecessor.shape) > 1:
+			pred = predecessor[start,pred]
 
-		if pred == -9999:
-			break
+			if pred == -9999:
+				break
+			else:
+				path_list.append(pred)
+
 		else:
-			path_list.append(pred)
+			pred = predecessor[pred]
+
+			if pred == -9999:
+				break
+			else:
+				path_list.append(pred)
+
 
 	path_list.reverse()
 	path = np.array(path_list)
@@ -572,7 +588,7 @@ def TEASAR(object_points, parameters, init_root=np.array([]), init_dest=np.array
 			path = path_list[i]
 
 			if soma:
-				path = np.delete(path,np.arange(1,150))
+				path = np.delete(path,np.arange(1,180))
 
 			if i == 0:
 				nodes = path
@@ -645,7 +661,6 @@ def skeletonize(object_input, object_id = 1, dsmp_resolution = [1,1,1], paramete
 			if init_dest.shape[0] != 0:
 				init_dest = downsample_points(init_dest, dsmp_resolution)
 
-		spio.savemat('./test/somads.mat',{'p':obj_points})
 		# Convert coordinates to bounding box
 		min_bound = np.min(obj_points, axis=0)
 		obj_points = obj_points - min_bound + 1
@@ -688,6 +703,7 @@ def edges2sparse(nodes, edges):
 	s = nodes.shape[0]
 	conn_mat = lil_matrix((s, s), dtype=bool)
 	conn_mat[edges[:,0],edges[:,1]] = 1
+	conn_mat[edges[:,1],edges[:,0]] = 1
 
 	return conn_mat
 
@@ -697,6 +713,7 @@ def find_connected(nodes, edges):
 	s = nodes.shape[0] 
 
 	nodes = np.unique(edges)
+	nodes = nodes.astype('int')
 
 	conn_mat = lil_matrix((s, s), dtype=bool)
 	conn_mat[edges[:,0],edges[:,1]] = 1
@@ -772,7 +789,8 @@ def merge_skeletons(skeleton1, skeleton2):
 	edges2 = skeleton2.edges
 
 
-	if edges2.shape[0] >= edges1.shape[0]:
+	if True:
+	# if edges2.shape[0] >= edges1.shape[0]:
 		tree1 = spatial.cKDTree(nodes1)
 
 		nodes2 = nodes2.astype('float32')
@@ -785,30 +803,113 @@ def merge_skeletons(skeleton1, skeleton2):
 	
 		edges2 = remove_overlap_edges(nodes2_overlap, edges2) 
 
+		
+###
+# Method 1
+		# connected = find_connected(nodes2, edges2)
+
+		# conn_mat1 = edges2sparse(nodes1, edges1)
+		# conn_mat2 = edges2sparse(nodes2, edges2)
+		# dist_mat1, pred1 = shortest_path(conn_mat1, directed=False, return_predecessors=True)
+		# dist_mat2, pred2 = shortest_path(conn_mat2, directed=False, return_predecessors=True)
+
+
+		# for i in range(len(connected)):
+		# 	path = connected[i]
+		# 	path_idx = np.where(path)[0]
+
+			
+		# 	nodes_path = nodes2[path,:]
+		# 	(dist, nodes1_idx) = tree1.query(nodes_path)
+
+		# 	overlap = dist == 0
+		# 	nodes2_overlap = np.where(overlap)[0]
+
+		# 	if np.sum(overlap) < 2:
+		# 		continue
+
+		# 	nodes1_overlap = nodes1_idx[overlap]
+
+		# 	pairs = combination_pairs(nodes1_overlap.shape[0])
+		# 	for j in range(pairs.shape[0]):
+		# 		start_node1 = nodes1_overlap[pairs[j,0]]
+		# 		end_node1 = nodes1_overlap[pairs[j,1]]
+
+		# 		if np.isfinite(dist_mat1[start_node1, end_node1]):
+		# 			start_node2 = path_idx[nodes2_overlap[pairs[j,0]]]
+		# 			end_node2 = path_idx[nodes2_overlap[pairs[j,1]]]
+
+		# 			if np.isfinite(dist_mat2[start_node2, end_node2]):	
+		# 				path_piece = find_path(pred2, end_node2, start_node2)
+
+		# 				edges2 = remove_overlap_edges(path_piece, edges2)
+
+
+# Method 2
+		connected = find_connected(nodes2, edges2)
+
+		conn_mat1 = edges2sparse(nodes1, edges1)
+		conn_mat2 = edges2sparse(nodes2, edges2)
+		dist_mat1, pred1 = shortest_path(conn_mat1, directed=False, return_predecessors=True)
+
+		for i in range(len(connected)):
+			path = connected[i]
+			path_idx = np.where(path)[0]
+
+			conn_mat_path = conn_mat2[path,:][:,path]
+			
+			end_nodes2 = np.where(np.sum(conn_mat_path, 0)==1)[1]
+			
+			end_idx = path_idx[end_nodes2]
+
+			end_points = nodes2[end_idx,:]
+			
+			end_nodes1 = np.zeros(end_points.shape[0], dtype='int')
+			for j in range(end_points.shape[0]):
+				p_end = end_points[j,:]
+
+				node_end = find_row(nodes1, p_end)
+
+				end_nodes1[j] = node_end
+
+			if np.sum(end_nodes1<0) > 0:
+				continue
+
+			c = 1
+			pairs = combination_pairs(end_nodes1.shape[0])
+			for j in range(pairs.shape[0]):
+				c = c * np.isfinite(dist_mat1[end_nodes1[pairs[j,0]],end_nodes1[pairs[j,1]]])
+
+			if c==1:
+				edges2 = remove_overlap_edges(path_idx, edges2)
+##
+
 		skeleton2.edges = edges2
-		skeleton2 = remove_dust(skeleton2)
-		
-	else:
-		tree2 = spatial.cKDTree(nodes2)
+		skeleton2 = consolidate_skeleton(skeleton2)
 
-		nodes1 = nodes1.astype('float32')
-		(dist, nodes2_idx) = tree2.query(nodes1)
+	# else:
+	# 	tree2 = spatial.cKDTree(nodes2)
 
-		graph1 = edges2sparse(nodes1, edges1)
+	# 	nodes1 = nodes1.astype('float32')
+	# 	(dist, nodes2_idx) = tree2.query(nodes1)
+
+	# 	graph1 = edges2sparse(nodes1, edges1)
 		
-		overlap = dist == 0
-		nodes1_overlap = np.where(overlap)[0]
+	# 	overlap = dist == 0
+	# 	nodes1_overlap = np.where(overlap)[0]
 	
-		edges1 = remove_overlap_edges(nodes1_overlap, edges1) 
+	# 	edges1 = remove_overlap_edges(nodes1_overlap, edges1) 
 
-		skeleton1.edges = edges1
-		skeleton1 = remove_dust(skeleton1)
+	# 	skeleton1.edges = edges1
+	# 	skeleton1 = remove_dust(skeleton1)
+
+	# skeleton2 = remove_dust(skeleton2)
 
 
 	return skeleton1, skeleton2
 
 
-def remove_dust(skeleton):
+def remove_dust(skeleton, dust_threshold):
 
 	nodes = skeleton.nodes
 	edges = skeleton.edges 
@@ -818,7 +919,7 @@ def remove_dust(skeleton):
 	for i in range(len(connected)):
 		path = connected[i]
 
-		if np.sum(path) < 50:
+		if np.sum(path) < dust_threshold:
 			path_nodes = np.where(path)[0]
 
 			for j in range(len(path_nodes)):
@@ -837,6 +938,7 @@ def merge_cell(skeletons, points_list):
 	adjacent_chunks = points_list[1].astype('uint32')
 	
 	for i in range(adjacent_chunks.shape[0]):
+
 		print(adjacent_chunks[i,:])
 		skeleton1 = skeletons[adjacent_chunks[i,0]]
 		skeleton2 = skeletons[adjacent_chunks[i,1]]
@@ -860,7 +962,7 @@ def merge_cell(skeletons, points_list):
 
 		if skeleton.edges.shape[0] == 0:																																																																																																																																																																														
 			continue
-		
+
 		skeleton.edges = skeleton.edges.astype('uint32')
 		skeleton.edges = skeleton.edges + offset
 		
@@ -883,34 +985,56 @@ def merge_cell(skeletons, points_list):
 	return skeleton_merged
 
 
-def trim_skeleton(skeleton):
+def remove_row(array, rows2remove):
 
-	skeleton = remove_dust(skeleton)
+	for i in range(rows2remove.shape[0]):
+		idx = find_row(array,rows2remove[i,:])
 
+		array = np.delete(array, idx, axis=0)
+
+
+	return array
+
+
+def interpolate_line(point1, point2):
+
+	n_step = 10
+
+	NDIM = point1.size
+	int_points = np.zeros((n_step,NDIM))
+	
+	for i in range(n_step):
+		a = i+1
+		b = n_step-i
+		int_points[i,:] = (a*point2+b*point1)/(a+b)
+
+	int_points = np.round(int_points)
+	int_points = np.unique(int_points, axis=0)
+
+	return int_points
+
+
+def connect_pieces(skeleton, p):
+	# Connect broken pieces
 	nodes = skeleton.nodes
 	edges = skeleton.edges
 
-	# Connect broken pieces
-	connected = find_connected(nodes, edges)
+	all_connected = 1
+	while all_connected != 0:
+		connected = find_connected(nodes, edges)
 
-	connected_len = np.zeros(len(connected))
-	
-	for i in range(len(connected)):
-		path = connected[i]
+		n_connected = len(connected)
 
-		connected_len[i] = np.sum(path)
+		pairs = combination_pairs(n_connected)
 
-	order = np.argsort(connected_len)
+		all_connected = 0
+		for i in range(pairs.shape[0]):
+			path_piece = connected[pairs[i,0]]
+			nodes_piece = nodes[path_piece]
+			nodes_piece = nodes_piece.astype('float32')
+			nodes_piece_idx = np.where(path_piece)[0]
 
-	for i in range(len(connected)):
-		path_piece = connected[order[i]]
-		nodes_piece = nodes[path_piece]
-		nodes_piece = nodes_piece.astype('float32')
-		nodes_piece_idx = np.where(path_piece)[0]
-
-		for j in range(len(connected)-i-1):
-			path_tree = connected[order[len(order)-j-1]]
-
+			path_tree = connected[pairs[i,1]]
 			nodes_tree = nodes[path_tree]
 			nodes_tree_idx = np.where(path_tree)[0]
 			tree = spatial.cKDTree(nodes_tree)
@@ -920,62 +1044,250 @@ def trim_skeleton(skeleton):
 			min_dist = np.min(dist)
 
 			if min_dist < 100:
+	
 				min_dist_idx = int(np.where(dist==min_dist)[0][0])
 				start_idx = nodes_piece_idx[min_dist_idx]
 				end_idx = nodes_tree_idx[idx[min_dist_idx]]
 
-				new_edge = np.array([start_idx,end_idx])
-				
-				new_edge = np.reshape(new_edge,[1,2])
-				edges = np.concatenate((edges,new_edge),0)
-				print('Connected.')
+				int_points = interpolate_line(nodes[start_idx,:],nodes[end_idx,:])
+					
+				for k in range(int_points.shape[0]):
+					in_seg = np.sum(~np.any(p - int_points[k,:], axis=1))
+					
+					if in_seg == 0:
+						break
 
+				if in_seg:
+					new_edge = np.array([start_idx,end_idx])
+					
+					new_edge = np.reshape(new_edge,[1,2])
+					edges = np.concatenate((edges,new_edge),0)
+					print('Connected.')
+
+					all_connected += 1
+		
+
+	####
+	# connected = find_connected(nodes, edges)
+
+	# connected_len = np.zeros(len(connected))
+	
+	# for i in range(len(connected)):
+	# 	path = connected[i]
+
+	# 	connected_len[i] = np.sum(path)
+
+	# order = np.argsort(connected_len)
+
+	
+	# for i in range(len(connected)):
+	# 	path_piece = connected[order[i]]
+	# 	nodes_piece = nodes[path_piece]
+	# 	nodes_piece = nodes_piece.astype('float32')
+	# 	nodes_piece_idx = np.where(path_piece)[0]
+
+	# 	for j in range(len(connected)-i-1):
+
+	# 		path_tree = connected[order[len(order)-j-1]]
+
+	# 		nodes_tree = nodes[path_tree]
+	# 		nodes_tree_idx = np.where(path_tree)[0]
+	# 		tree = spatial.cKDTree(nodes_tree)
+
+	# 		(dist, idx) = tree.query(nodes_piece)
+
+	# 		min_dist = np.min(dist)
+	# 		print min_dist
+
+	# 		if min_dist < 200:
+	# 			print(min_dist)
+	# 			min_dist_idx = int(np.where(dist==min_dist)[0][0])
+	# 			start_idx = nodes_piece_idx[min_dist_idx]
+	# 			end_idx = nodes_tree_idx[idx[min_dist_idx]]
+
+	# 			int_points = interpolate_line(nodes[start_idx,:],nodes[end_idx,:])
 				
+	# 			for k in range(int_points.shape[0]):
+	# 				in_seg = np.sum(~np.any(p - int_points[k,:], axis=1))
+			
+	# 				if in_seg == 0:
+	# 					break
+
+	# 			if in_seg:
+	# 				new_edge = np.array([start_idx,end_idx])
+				
+	# 				new_edge = np.reshape(new_edge,[1,2])
+	# 				edges = np.concatenate((edges,new_edge),0)
+	# 				print('Connected.')
+
+	skeleton.edges = edges
+
+	return skeleton
+
+
+def remove_ticks(skeleton):
 	# Remove ticks
-	unique_nodes, unique_counts = np.unique(edges, return_counts=True)
+	edges = skeleton.edges
 
-	end_idx = np.where(unique_counts==1)[0]
+	path_all = np.ones(1)
+	while path_all.shape[0] != 0:
+		
+		unique_nodes, unique_counts = np.unique(edges, return_counts=True)
 
-	path_all = np.array([])
-	for i in range(end_idx.shape[0]):
-		idx = end_idx[i]
-		current_node = unique_nodes[idx]
+		end_idx = np.where(unique_counts==1)[0]
 
-		edge_row_idx, edge_col_idx = np.where(edges==current_node)
+		path_all = np.array([])
+		for i in range(end_idx.shape[0]):
+			idx = end_idx[i]
+			current_node = unique_nodes[idx]
 
-		path = np.array([])
-		single_piece = 0
-		while edge_row_idx.shape[0] == 1:
-			
-			next_node = edges[edge_row_idx,1-edge_col_idx]
-			path = np.concatenate((path,edge_row_idx))
-
-			prev_row_idx = edge_row_idx
-			prev_col_idx = 1-edge_col_idx
-			current_node = next_node
-			
 			edge_row_idx, edge_col_idx = np.where(edges==current_node)
 
-			if edge_row_idx.shape[0] == 1:
-				single_piece = 1
-				break
+			path = np.array([])
+			single_piece = 0
+			while edge_row_idx.shape[0] == 1:
+				
+				next_node = edges[edge_row_idx,1-edge_col_idx]
+				path = np.concatenate((path,edge_row_idx))
 
-			next_row_idx = np.setdiff1d(edge_row_idx,prev_row_idx)
-			next_col_idx = edge_col_idx[np.where(edge_row_idx==next_row_idx[0])[0]]
+				prev_row_idx = edge_row_idx
+				prev_col_idx = 1-edge_col_idx
+				current_node = next_node
+				
+				edge_row_idx, edge_col_idx = np.where(edges==current_node)
 
-			edge_row_idx = next_row_idx 
-			edge_col_idx = next_col_idx
+				if edge_row_idx.shape[0] == 1:
+					single_piece = 1
+					break
 
-		print path.shape
-		if path.shape[0] < 200 and single_piece == 0:
-			path_all = np.concatenate((path_all,path))
-			print("Tick removed.")
-	
-	
-	edges = np.delete(edges,path_all,axis=0)
+				next_row_idx = np.setdiff1d(edge_row_idx,prev_row_idx)
+				next_col_idx = edge_col_idx[np.where(edge_row_idx==next_row_idx[0])[0]]
+
+				edge_row_idx = next_row_idx 
+				edge_col_idx = next_col_idx
+
+			# print path.shape
+			if path.shape[0] < 200 and single_piece == 0:
+				path_all = np.concatenate((path_all,path))
+				# print("Tick removed.")
+			
+		edges = np.delete(edges,path_all,axis=0)
+
+
 	skeleton.edges = edges
-	consolidate_skeleton(skeleton)
+	
+	return skeleton
 
+
+def remove_loops(skeleton):
+	# Remove loops
+	nodes = skeleton.nodes
+	edges = skeleton.edges
+	edges = np.sort(edges, axis=1)
+
+	
+	cycle_exists = 1
+
+	while cycle_exists == 1:
+		G = nx.Graph()
+
+		for i in range(edges.shape[0]):
+			G.add_edge(edges[i,0], edges[i,1])
+
+		try: 
+			edges_cycle = nx.find_cycle(G, orientation='ignore')
+			print('Loop removed.')
+
+		except:
+			cycle_exists = 0
+			print('All loops removed.')
+			continue
+
+		edges_cycle = np.array(edges_cycle)
+		edges_cycle = np.sort(edges_cycle, axis=1)
+
+		nodes_cycle = np.unique(edges_cycle)
+		nodes_cycle = nodes_cycle.astype('int')
+		
+		unique_nodes, unique_counts = np.unique(edges, return_counts=True)
+
+		branch_nodes = unique_nodes[unique_counts>=3]
+
+		branch_cycle = nodes_cycle[np.isin(nodes_cycle,branch_nodes)]
+		branch_cycle = branch_cycle.astype('int')
+		print branch_cycle
+
+		if branch_cycle.shape[0] == 1:
+			branch_cycle_point = nodes[branch_cycle,:]
+
+			cycle_points = nodes[nodes_cycle,:]
+
+			dist = np.sum((cycle_points - branch_cycle_point)**2, 1)
+			end_node = nodes_cycle[np.argmax(dist)]
+
+			edges = remove_row(edges, edges_cycle)
+
+			new_edge = np.array([branch_cycle[0],end_node])
+			new_edge = np.reshape(new_edge,[1,2])
+			edges = np.concatenate((edges,new_edge), 0)
+
+		elif branch_cycle.shape[0] == 2:
+			path = nx.shortest_path(G,branch_cycle[0],branch_cycle[1])
+
+			edge_path = path2edge(path)
+			edge_path = np.sort(edge_path, axis=1)
+
+			row_valid = np.ones(edges_cycle.shape[0])
+			for i in range(edge_path.shape[0]):
+				row_valid = row_valid - (edges_cycle[:,0]==edge_path[i,0])*(edges_cycle[:,1]==edge_path[i,1])
+
+			row_valid = row_valid.astype('bool')
+			edge_path = edges_cycle[row_valid,:]
+
+			edges = remove_row(edges, edge_path)
+
+		elif branch_cycle.shape[0] == 0:
+			edges = remove_row(edges, edges_cycle)
+
+		else:
+			branch_cycle_points = nodes[branch_cycle,:]
+
+			centroid = np.mean(branch_cycle_points, axis=0)
+			dist = np.sum((nodes - centroid)**2, 1)
+			intersect_node = np.argmin(dist)
+			intersect_point = nodes[intersect_node,:]
+
+			edges = remove_row(edges, edges_cycle)
+
+			new_edges = np.zeros((branch_cycle.shape[0],2))
+			new_edges[:,0] = branch_cycle
+			new_edges[:,1] = intersect_node
+
+			if np.isin(intersect_node, branch_cycle):
+				idx = np.where(branch_cycle==intersect_node)
+				new_edges = np.delete(new_edges, idx, 0)
+
+			edges = np.concatenate((edges,new_edges), 0)
+
+
+	skeleton.nodes = nodes
+	skeleton.edges = edges
+	skeleton = consolidate_skeleton(skeleton)
+
+	return skeleton
+
+
+def trim_skeleton(skeleton, p):
+
+	skeleton = remove_dust(skeleton, 100)
+
+	skeleton = remove_loops(skeleton)
+
+	skeleton = connect_pieces(skeleton, p)
+
+	skeleton = remove_ticks(skeleton)
+
+	skeleton = consolidate_skeleton(skeleton)
 
 	return skeleton
 
@@ -1006,7 +1318,8 @@ def consolidate_skeleton(skeleton):
 
 		# Remove unnecessary nodes
 		eff_node_list = np.unique(unique_edges)
-
+		eff_node_list = eff_node_list.astype('int')
+		
 		eff_nodes = nodes[eff_node_list]
 		eff_radii = radii[eff_node_list]
 
@@ -1162,11 +1475,16 @@ def skeletonize_cell_dist(points_list, parameters, n_core=None):
 	# Skeletonize 
 	points_chunk = points_list[2:]
 
-	skeletons = pool.map(partial(skeletonize, object_id=1, dsmp_resolution=[1,1,1], parameters=parameters), points_chunk)
+	try:
+		skeletons = pool.map(partial(skeletonize, object_id=1, dsmp_resolution=[1,1,1], parameters=parameters), points_chunk)
 
-	pool.close()
-	pool.join()
+		pool.close()
+		pool.join()
+		pool.terminate()
 
+	except:
+		pool.terminate()
+		
 	t1 = time()
 	print(">>>>> Elapsed time : " + str(np.round(t1-t0, decimals=3)))
 	
@@ -1206,6 +1524,7 @@ def remove_soma(p, soma_coord):
 
 	thr_idx = np.where(diff_ratio<0.15)[0][0]
 	threshold = np.sum(bin_edges[thr_idx:thr_idx+2])/2
+	print threshold
 
 	p_nosoma = p[dist>threshold,:]
 
@@ -1219,46 +1538,75 @@ def connect_soma(skeleton, soma_coord, p):
 	radii = skeleton.radii
 
 	connected = find_connected(nodes, edges)
+	print len(connected)
 
 	neighbors = np.array([])
 	for i in range(len(connected)):
 		piece_mask = connected[i]
 
 		nodes_piece = nodes[piece_mask,:]
+		# spio.savemat('./nodes'+str(i)+'.mat', {'n':nodes_piece})
 
-		dist = np.sum((nodes_piece - soma_coord)**2,1)
+		dist = np.sum((nodes_piece - soma_coord)**2,1)**0.5
+		
+		if min(dist) > 700:
+			continue
 
 		piece_idx = np.where(piece_mask)[0]
 
 		node_neighbor = piece_idx[np.argmin(dist)]
 
-		edge_row_idx, edge_col_idx = np.where(edges==node_neighbor)
+		edge_row_idx_init, edge_col_idx_init = np.where(edges==node_neighbor)
 		
+		next_node = np.copy(node_neighbor)
+
 		n = 15
-		for j in range(edge_row_idx.shape[0]):
-
-			if j > 0:
-				node_neighbor = piece_idx[np.argmin(dist)]
-				edge_row_idx, edge_col_idx = np.where(edges==node_neighbor)
+		del_idx_list = []
+		neighbor_candidates = np.zeros(edge_row_idx_init.shape[0])
+		for j in range(edge_row_idx_init.shape[0]):		
 		
-			for k in range(n):
-				edge_row_idx, edge_col_idx = np.where(edges==node_neighbor)
+			edge_row_idx = edge_row_idx_init[j]
+			edge_col_idx = edge_col_idx_init[j]
+			edge_row_idx = np.array([edge_row_idx])
+			edge_col_idx = np.array([edge_col_idx])
 
-				if edge_row_idx.shape[0] == 0:
-					break
+			c = 0
+			del_idx = [] 
+			while edge_row_idx.shape[0] != 0 and c != n:
 
-				node_neighbor = edges[edge_row_idx[0],1-edge_col_idx[0]]
-				edges = np.delete(edges,edge_row_idx[0],0)
+				next_node = edges[edge_row_idx[0], 1-edge_col_idx[0]]
+				del_idx.append(edge_row_idx[0])
+				neighbor_candidates[j] = next_node
 
-			if k == n-1:
-				node_neighbor_current = node_neighbor		
-			
-		p_neighbor = nodes[node_neighbor_current,:]
+				prev_idx = edge_row_idx
+				next_row_idx, next_col_idx = np.where(edges==next_node)
+				edge_row_idx = np.setdiff1d(next_row_idx, prev_idx)
+				if edge_row_idx.shape[0] != 0:
+					edge_col_idx = next_col_idx[np.where(next_row_idx==edge_row_idx[0])[0]]
+
+				c = c + 1
+
+			del_idx_list.append(del_idx)
+
+		
+		l_del_idx = np.zeros(edge_row_idx_init.shape[0])
+		del_idx = []
+		for j in range(edge_row_idx_init.shape[0]):
+			l_del_idx[j] = len(del_idx_list[j])
+
+			del_idx = del_idx + del_idx_list[j]
+
+		if np.sum(l_del_idx==n) < 2:
+			node_neighbor = neighbor_candidates[np.argmax(l_del_idx)]
+
+			edges = np.delete(edges, del_idx, 0)
+		
+		node_neighbor = int(node_neighbor)
+		p_neighbor = nodes[node_neighbor,:]
 		neighbors = np.concatenate((neighbors, p_neighbor))
 
 	neighbors = np.reshape(neighbors,[neighbors.shape[0]/3,3])
-
-	print neighbors
+	print(neighbors)
 
 	soma_coord = np.reshape(soma_coord,[1,3])
 	point_group = np.concatenate((neighbors, soma_coord))
@@ -1269,9 +1617,22 @@ def connect_soma(skeleton, soma_coord, p):
 	valid = get_valid(p, bound)
 	p_valid = p[valid,:]
 
-	soma_skeleton = skeletonize(p_valid, 1, [2,2,2], [10,10], soma_coord, neighbors, 1)
+	# Skeletonize soma
+	dsmp_resolution = 2
 
-	save_skeleton_mat(soma_skeleton,'./test/soma_skeleton.mat')
+	for i in range(neighbors.shape[0]):
+		coord = neighbors[i,:]
+
+		coord_approx = np.round(coord/dsmp_resolution)*dsmp_resolution
+
+		node_idx = find_row(nodes, coord)
+		nodes[node_idx,:] = coord_approx
+		neighbors[i,:] = coord_approx
+
+	# Parameters are meaningless
+	soma_skeleton = skeletonize(p_valid, 1, [dsmp_resolution]*3, [10,10], soma_coord, neighbors, 1)
+
+	# Consolidate soma skeleton and the rest
 	soma_skeleton.edges = soma_skeleton.edges + nodes.shape[0]
 
 	nodes = np.concatenate((nodes, soma_skeleton.nodes))
@@ -1284,7 +1645,6 @@ def connect_soma(skeleton, soma_coord, p):
 
 
 	return skeleton
-
 
 
 def smooth_skeleton(skeleton, ratio=2):									
@@ -1355,44 +1715,33 @@ def smooth_skeleton(skeleton, ratio=2):
 	return skeleton
 
 
-def skeletonize_file(points_file, output_file, output_file_mat='', soma=0, merge=True, smooth=True):
+def skeletonize_file(points_file, output_file, n_core=2, soma=0, soma_coord=np.array([])):
+
+	
+	print('Loading points...')
+	p = np.load(points_file)
 
 	if soma:
-		p = load_points_mat(points_file)
-		
-		print('Chunking...')
-		points_list = chunk_points(p,256,128)
+		p_wsoma = np.copy(p)
 
-		print('Skeletonizing chunks...')
-		skeletons = skeletonize_cell(points_list, [10,10])
-		# np.save('./skeletons.npy',skeletons)
-		# skeletons = np.load('./skeletons.npy')
-		
+		print('Removing soma...')
+		p = remove_soma(p_wsoma,soma_coord)
 
-		if merge:
-			print('Merging chunks...')
-			skeleton = merge_cell(skeletons, points_list)
-			skeleton = remove_dust(skeleton)
+	points_list = chunk_points(p,512,256)
 
-		else:
-			np.save(output_file, skeletons)
+	skeletons = skeletonize_cell_dist(points_list, [10,10], n_core)
+	skeletons = crop_cell(skeletons, points_list)
+
+	print('Merging chunks...')
+	skeleton = merge_cell(skeletons, points_list)
+	skeleton = trim_skeleton(skeleton, p)
 
 
-		print('Trimming skeleton...')
-		skeleton = trim_skeleton(skeleton)
+	if soma:
+		skeleton = connect_soma(skeleton, soma_coord, p)
 
 
-		if smooth:
-			print('Smoothing skeleton...')
-			skeleton = smooth_skeleton(skeleton,4)
-
-
-		np.save(output_file, skeleton)
-		# make_precomputed_skeleton(skeleton, output_file)
-		print('Skeleton saved!')
-
-		if output_file_mat != '':
-			save_skeleton_mat(skeleton, output_file_mat)
+	save_skeleton(skeleton, output_file)
 
 
 
@@ -1404,7 +1753,7 @@ import io
 import six
 import struct
 
-class SkeletonPre(object):
+class SkeletonPrecomputed(object):
 
     def __init__(self, vertex_positions, edges, vertex_attributes=None):
         self.vertex_positions = np.array(vertex_positions, dtype='<f4')
@@ -1433,34 +1782,47 @@ class SkeletonPre(object):
 
         return result.getvalue()
 
-def make_precomputed_skeleton(skeleton, output_filename='./skeleton'):
-    
-    n = skeleton.nodes
-    e = skeleton.edges
-	
+
+def make_precomputed_skeleton(filename, output_filename='./skeleton'):
+    if filename[-3:] == 'mat':
+        mat = spio.loadmat(filename)
+        skeleton = mat['skeleton']
+        n = skeleton['nodes'][0][0]
+        e = skeleton['edges'][0][0]
+
+    else:
+        skeleton = load_skeleton(filename)
+        n = skeleton['nodes']
+        e = skeleton['edges']
+
     print n.shape, e.shape
     n = n.astype('uint32')
-    n[:,:2] = n[:,:2]*32 - 16
-    n[:,2] = n[:,2]*40 - 20
+    n[:,:2] = n[:,:2]*32
+    n[:,2] = n[:,2]*40
 
     e = np.reshape(e,[1, e.size])
     e = e[0]
     
-    pyskel = SkeletonPre(n,e).encode()
+    pyskel = Skeleton(n,e).encode()
 
-    # gs = cloudvolume.storage.Storage(bucket_dir)
-    # gs.put_file(str(object_id),pyskel)
     f = open(output_filename,'w')
     f.write(pyskel)
     f.close()
+
 
 ##### Data I/O #####
 import cPickle as pickle
 
 def save_skeleton(skeleton, filename='./skeleton.pkl'):
+	
+	SkeletonDict = {}
+	SkeletonDict["nodes"] = skeleton.nodes.astype('uint16')
+	SkeletonDict["edges"] = skeleton.edges.astype('uint32')
+	SkeletonDict["radii"] = skeleton.radii.astype('float32')
+	SkeletonDict["root"] = skeleton.root.astype('uint16')
 
 	with open(filename, 'wb') as output:
-		pickle.dump(skeleton, output, pickle.HIGHEST_PROTOCOL)
+		pickle.dump(SkeletonDict, output, pickle.HIGHEST_PROTOCOL)
 
 
 def load_skeleton(filename):
@@ -1482,4 +1844,4 @@ def load_points_mat(mat_file):
 
 def save_skeleton_mat(skeleton,out_filename='./skeleton.mat'):
 
-	spio.savemat(out_filename,{'skeleton':skeleton})
+	spio.savemat(out_filename, {'skeleton':skeleton})
