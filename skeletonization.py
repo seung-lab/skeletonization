@@ -588,7 +588,7 @@ def TEASAR(object_points, parameters, init_root=np.array([]), init_dest=np.array
 			path = path_list[i]
 
 			if soma:
-				path = np.delete(path,np.arange(1,180))
+				path = np.delete(path,np.arange(1,int(path.shape[0]*0.8)))
 
 			if i == 0:
 				nodes = path
@@ -600,7 +600,7 @@ def TEASAR(object_points, parameters, init_root=np.array([]), init_dest=np.array
 				edges = np.concatenate((edges,edges_path))
 					
 
-	if nodes.shape[0] == 0:
+	if nodes.shape[0] == 0 or edges.shape[0] == 0:
 		skeleton = Skeleton()
 
 	else:
@@ -634,7 +634,6 @@ def skeletonize(object_input, object_id = 1, dsmp_resolution = [1,1,1], paramete
 	## OUTPUT ##
 	# skeleton : skeleton object
 
-
 	# Don't run skeletonization if the input is an empty array
 	if object_input.shape[0] == 0:
 		skeleton =  Skeleton()
@@ -649,9 +648,31 @@ def skeletonize(object_input, object_id = 1, dsmp_resolution = [1,1,1], paramete
 		# If initial roots is empty, take the first point
 		init_root = np.array(init_root)
 		init_dest = np.array(init_dest)
+
 		if len(init_root) == 0:
 			init_root = obj_points[0,:]
 
+		else:
+			for i in range(init_root.shape[0]):
+				root = init_root[i,:]
+				root_idx = find_row(obj_points, root)
+
+				if root_idx == -1:
+					dist = np.sum((obj_points - root)**2,1)
+					root = obj_points[np.argmin(dist),:]
+					init_root[i,:] = root 
+
+
+		for i in range(init_dest.shape[0]):
+			dest = init_dest[i,:]
+			dest_idx = find_row(obj_points, dest)
+
+			if dest_idx == -1:
+				dist = np.sum((obj_points - dest)**2,1)
+				dest = obj_points[np.argmin(dist),:]
+				init_dest[i,:] = dest 
+
+	
 		# Downsample points
 		if sum(dsmp_resolution) > 3:
 			print(">>>>> Downsample...")
@@ -680,7 +701,7 @@ def skeletonize(object_input, object_id = 1, dsmp_resolution = [1,1,1], paramete
 		# Convert coordinates back into original coordinates
 		if skeleton.nodes.shape[0] != 0:
 			skeleton.nodes = upsample_points(skeleton.nodes + min_bound - 1, dsmp_resolution)
-		
+
 
 	return skeleton
 
@@ -1043,8 +1064,8 @@ def connect_pieces(skeleton, p):
 
 			min_dist = np.min(dist)
 
-			if min_dist < 100:
-	
+			if min_dist < 50:
+				print(min_dist)
 				min_dist_idx = int(np.where(dist==min_dist)[0][0])
 				start_idx = nodes_piece_idx[min_dist_idx]
 				end_idx = nodes_tree_idx[idx[min_dist_idx]]
@@ -1285,6 +1306,8 @@ def trim_skeleton(skeleton, p):
 
 	skeleton = connect_pieces(skeleton, p)
 
+	skeleton = remove_loops(skeleton)
+
 	skeleton = remove_ticks(skeleton)
 
 	skeleton = consolidate_skeleton(skeleton)
@@ -1495,7 +1518,8 @@ def skeletonize_cell_dist(points_list, parameters, n_core=None):
 def crop_cell(skeletons, points_list):
 	# Crop skeletons
 	bound_list = points_list[0]
-
+	print(bound_list.shape)
+	print(len(skeletons))
 	for i in range(len(skeletons)):
 		skeleton = skeletons[i]
 
@@ -1512,21 +1536,28 @@ def crop_cell(skeletons, points_list):
 	return skeletons
 
 
-def remove_soma(p, soma_coord):
+def remove_soma(p, soma_coord, threshold=-1):
 
-	dist = np.sum((p - soma_coord)**2,1)**0.5
+	if threshold == -1:
+		dist = np.sum((p - soma_coord)**2,1)**0.5
 
-	hist, bin_edges = np.histogram(dist, np.arange(1,np.max(dist),50))
+		hist, bin_edges = np.histogram(dist, np.arange(1,np.max(dist),50))
 
-	hist_diff = np.diff(hist)
-	hist_diff = hist_diff.astype('float32')
-	diff_ratio = np.abs(hist_diff/hist[:-1])
+		hist_diff = np.diff(hist)
+		hist_diff = hist_diff.astype('float32')
+		diff_ratio = np.abs(hist_diff/hist[:-1])
 
-	thr_idx = np.where(diff_ratio<0.15)[0][0]
-	threshold = np.sum(bin_edges[thr_idx:thr_idx+2])/2
-	print threshold
+		thr_idx = np.where(diff_ratio<0.15)[0][0]
+		threshold = np.sum(bin_edges[thr_idx:thr_idx+2])/2
+		print(threshold)
+
+		# hist_ratio = hist/float(np.max(hist))
+		# thr_idx = np.where(hist_ratio<0.01)[0][0]
+		# threshold = np.sum(bin_edges[thr_idx:thr_idx+2])/2
+		# print threshold
 
 	p_nosoma = p[dist>threshold,:]
+
 
 	return p_nosoma
 
@@ -1545,7 +1576,6 @@ def connect_soma(skeleton, soma_coord, p):
 		piece_mask = connected[i]
 
 		nodes_piece = nodes[piece_mask,:]
-		# spio.savemat('./nodes'+str(i)+'.mat', {'n':nodes_piece})
 
 		dist = np.sum((nodes_piece - soma_coord)**2,1)**0.5
 		
@@ -1638,8 +1668,9 @@ def connect_soma(skeleton, soma_coord, p):
 	nodes = np.concatenate((nodes, soma_skeleton.nodes))
 	edges = np.concatenate((edges, soma_skeleton.edges))
 	radii = np.concatenate((radii, soma_skeleton.radii))
+	root = upsample_points(downsample_points(soma_coord, [dsmp_resolution]*3), [dsmp_resolution]*3) 
 
-	skeleton = Skeleton(nodes, edges, radii)
+	skeleton = Skeleton(nodes, edges, radii, root)
 
 	skeleton = consolidate_skeleton(skeleton)
 
