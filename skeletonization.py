@@ -1024,6 +1024,8 @@ def interpolate_line(point1, point2):
 	NDIM = point1.size
 	int_points = np.zeros((n_step,NDIM))
 	
+	point1 = point1.astype('float32')
+	point2 = point2.astype('float32')
 	for i in range(n_step):
 		a = i+1
 		b = n_step-i
@@ -1041,7 +1043,7 @@ def connect_pieces(skeleton, p):
 	edges = skeleton.edges
 
 	all_connected = 1
-	while all_connected != 0:
+	while all_connected == 1:
 		connected = find_connected(nodes, edges)
 
 		n_connected = len(connected)
@@ -1065,16 +1067,16 @@ def connect_pieces(skeleton, p):
 			min_dist = np.min(dist)
 
 			if min_dist < 50:
-				print(min_dist)
+		
 				min_dist_idx = int(np.where(dist==min_dist)[0][0])
 				start_idx = nodes_piece_idx[min_dist_idx]
 				end_idx = nodes_tree_idx[idx[min_dist_idx]]
 
 				int_points = interpolate_line(nodes[start_idx,:],nodes[end_idx,:])
-					
+	
 				for k in range(int_points.shape[0]):
 					in_seg = np.sum(~np.any(p - int_points[k,:], axis=1))
-					
+
 					if in_seg == 0:
 						break
 
@@ -1086,67 +1088,18 @@ def connect_pieces(skeleton, p):
 					print('Connected.')
 
 					all_connected += 1
-		
 
-	####
-	# connected = find_connected(nodes, edges)
+					break
 
-	# connected_len = np.zeros(len(connected))
-	
-	# for i in range(len(connected)):
-	# 	path = connected[i]
-
-	# 	connected_len[i] = np.sum(path)
-
-	# order = np.argsort(connected_len)
-
-	
-	# for i in range(len(connected)):
-	# 	path_piece = connected[order[i]]
-	# 	nodes_piece = nodes[path_piece]
-	# 	nodes_piece = nodes_piece.astype('float32')
-	# 	nodes_piece_idx = np.where(path_piece)[0]
-
-	# 	for j in range(len(connected)-i-1):
-
-	# 		path_tree = connected[order[len(order)-j-1]]
-
-	# 		nodes_tree = nodes[path_tree]
-	# 		nodes_tree_idx = np.where(path_tree)[0]
-	# 		tree = spatial.cKDTree(nodes_tree)
-
-	# 		(dist, idx) = tree.query(nodes_piece)
-
-	# 		min_dist = np.min(dist)
-	# 		print min_dist
-
-	# 		if min_dist < 200:
-	# 			print(min_dist)
-	# 			min_dist_idx = int(np.where(dist==min_dist)[0][0])
-	# 			start_idx = nodes_piece_idx[min_dist_idx]
-	# 			end_idx = nodes_tree_idx[idx[min_dist_idx]]
-
-	# 			int_points = interpolate_line(nodes[start_idx,:],nodes[end_idx,:])
-				
-	# 			for k in range(int_points.shape[0]):
-	# 				in_seg = np.sum(~np.any(p - int_points[k,:], axis=1))
-			
-	# 				if in_seg == 0:
-	# 					break
-
-	# 			if in_seg:
-	# 				new_edge = np.array([start_idx,end_idx])
-				
-	# 				new_edge = np.reshape(new_edge,[1,2])
-	# 				edges = np.concatenate((edges,new_edge),0)
-	# 				print('Connected.')
 
 	skeleton.edges = edges
+
+	skeleton = consolidate_skeleton(skeleton)
 
 	return skeleton
 
 
-def remove_ticks(skeleton):
+def remove_ticks(skeleton, threshold=150):
 	# Remove ticks
 	edges = skeleton.edges
 
@@ -1166,7 +1119,7 @@ def remove_ticks(skeleton):
 
 			path = np.array([])
 			single_piece = 0
-			while edge_row_idx.shape[0] == 1:
+			while edge_row_idx.shape[0] == 1 and path.shape[0] < threshold:
 				
 				next_node = edges[edge_row_idx,1-edge_col_idx]
 				path = np.concatenate((path,edge_row_idx))
@@ -1188,14 +1141,15 @@ def remove_ticks(skeleton):
 				edge_col_idx = next_col_idx
 
 			# print path.shape
-			if path.shape[0] < 200 and single_piece == 0:
+			if path.shape[0] < threshold and single_piece == 0:
 				path_all = np.concatenate((path_all,path))
-				# print("Tick removed.")
+				print("Tick removed.")
 			
 		edges = np.delete(edges,path_all,axis=0)
 
-
 	skeleton.edges = edges
+
+	skeleton = consolidate_skeleton(skeleton)
 	
 	return skeleton
 
@@ -1236,7 +1190,6 @@ def remove_loops(skeleton):
 
 		branch_cycle = nodes_cycle[np.isin(nodes_cycle,branch_nodes)]
 		branch_cycle = branch_cycle.astype('int')
-		print branch_cycle
 
 		if branch_cycle.shape[0] == 1:
 			branch_cycle_point = nodes[branch_cycle,:]
@@ -1310,8 +1263,6 @@ def trim_skeleton(skeleton, p):
 
 	skeleton = remove_ticks(skeleton)
 
-	skeleton = consolidate_skeleton(skeleton)
-
 	return skeleton
 
 
@@ -1321,7 +1272,7 @@ def consolidate_skeleton(skeleton):
 	edges = skeleton.edges
 	radii = skeleton.radii
 
-	if nodes.shape[0] == 0:
+	if nodes.shape[0] == 0 or edges.shape[0] == 0:
 		skeleton = Skeleton()
 
 	else:
@@ -1351,6 +1302,8 @@ def consolidate_skeleton(skeleton):
 			row_idx, col_idx = np.where(unique_edges==node)
 
 			eff_edges[row_idx,col_idx] = i
+
+		eff_edges = np.unique(eff_edges, axis=0)
 
 		skeleton.nodes = eff_nodes
 		skeleton.edges = eff_edges
