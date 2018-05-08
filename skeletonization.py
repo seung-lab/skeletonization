@@ -588,7 +588,7 @@ def TEASAR(object_points, parameters, init_root=np.array([]), init_dest=np.array
 			path = path_list[i]
 
 			if soma:
-				path = np.delete(path,np.arange(1,int(path.shape[0]*0.8)))
+				path = np.delete(path,np.arange(1,int(path.shape[0]*0.4)))
 
 			if i == 0:
 				nodes = path
@@ -1159,7 +1159,6 @@ def remove_loops(skeleton):
 	nodes = skeleton.nodes
 	edges = skeleton.edges
 	edges = np.sort(edges, axis=1)
-
 	
 	cycle_exists = 1
 
@@ -1259,7 +1258,7 @@ def trim_skeleton(skeleton, p):
 
 	skeleton = connect_pieces(skeleton, p)
 
-	skeleton = remove_loops(skeleton)
+	# skeleton = remove_loops(skeleton)
 
 	skeleton = remove_ticks(skeleton)
 
@@ -1589,6 +1588,79 @@ def connect_soma(skeleton, soma_coord, p):
 		neighbors = np.concatenate((neighbors, p_neighbor))
 
 	neighbors = np.reshape(neighbors,[neighbors.shape[0]/3,3])
+	print(neighbors)
+
+	unique_nodes, unique_counts = np.unique(edges, return_counts=True)
+
+	end_idx = np.where(unique_counts==1)[0].astype('int')
+	
+	end_nodes = unique_nodes[end_idx].astype('int')
+
+	end_points = nodes[end_nodes,:]
+
+	dist = np.sum((end_points - soma_coord)**2,1)**0.5
+
+	end_neighbor = end_nodes[dist<500]
+	print(end_neighbor)
+
+	if end_neighbor.shape[0] != neighbors.shape[0]:
+	
+		for i in range(end_neighbor.shape[0]):
+			node_neighbor = end_neighbor[i]
+
+			dist_neighbor = np.sum((neighbors - nodes[node_neighbor,:])**2,1)**0.5
+
+			if np.min(dist_neighbor) < 50:
+				continue
+
+			edge_row_idx_init, edge_col_idx_init = np.where(edges==node_neighbor)
+			next_node = np.copy(node_neighbor)
+
+			n = 15
+			del_idx_list = []
+			neighbor_candidates = np.zeros(edge_row_idx_init.shape[0])
+			for j in range(edge_row_idx_init.shape[0]):		
+				
+				edge_row_idx = edge_row_idx_init[j]
+				edge_col_idx = edge_col_idx_init[j]
+				edge_row_idx = np.array([edge_row_idx])
+				edge_col_idx = np.array([edge_col_idx])
+
+				c = 0
+				del_idx = [] 
+				while edge_row_idx.shape[0] != 0 and c != n:
+
+					next_node = edges[edge_row_idx[0], 1-edge_col_idx[0]]
+					del_idx.append(edge_row_idx[0])
+					neighbor_candidates[j] = next_node
+
+					prev_idx = edge_row_idx
+					next_row_idx, next_col_idx = np.where(edges==next_node)
+					edge_row_idx = np.setdiff1d(next_row_idx, prev_idx)
+					if edge_row_idx.shape[0] != 0:
+						edge_col_idx = next_col_idx[np.where(next_row_idx==edge_row_idx[0])[0]]
+
+					c = c + 1
+
+				del_idx_list.append(del_idx)
+
+				
+			l_del_idx = np.zeros(edge_row_idx_init.shape[0])
+			del_idx = []
+			for j in range(edge_row_idx_init.shape[0]):
+				l_del_idx[j] = len(del_idx_list[j])
+
+				del_idx = del_idx + del_idx_list[j]
+
+			if np.sum(l_del_idx==n) < 2:
+				node_neighbor = neighbor_candidates[np.argmax(l_del_idx)]
+
+				edges = np.delete(edges, del_idx, 0)
+				
+			node_neighbor = int(node_neighbor)
+			p_neighbor = np.reshape(nodes[node_neighbor,:],[1,3])
+			neighbors = np.concatenate((neighbors, p_neighbor), axis=0)
+			
 	print(neighbors)
 
 	soma_coord = np.reshape(soma_coord,[1,3])
