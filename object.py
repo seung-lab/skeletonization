@@ -99,20 +99,23 @@ def extract_points_object(input_dir, object_id, mip_level, chunk_list):
 	return object_points
 
 
-# def extract_points_dist(input_dir, object_id, mip_level, chunk_list):
-# 	t0 = time()
-# 	client = Client()
+def extract_points_dist(input_dir, object_id, mip_level, chunk_list):
+	t0 = time()
+	pool = Pool(n_core)
 
-# 	n = len(chunk_list)
-# 	extract = client.map(extract_points_chunk, [input_dir]*n, [object_id]*n, [mip_level]*n, chunk_list)
+	n = len(chunk_list)
+	points_list = pool.map(partial(extract_points_chunk, input_dir=input_dir, object_id=object_id, mip_level=mip_level), chunk_list)
 
-# 	points_list = client.gather(extract)
+	pool.close()
+	pool.join()
+	pool.terminate()
 
-# 	object_points = collect_points(points_list)
+	object_points = collect_points(points_list)
 
-# 	t1 = time()
-# 	print(">>>>> Elapsed time : " + str(np.round(t1-t0, decimals=3)))
-# 	return object_points
+	t1 = time()
+	print(">>>>> Elapsed time : " + str(np.round(t1-t0, decimals=3)))
+	
+	return object_points
 
 
 def save_points(points_merged, output_file):
