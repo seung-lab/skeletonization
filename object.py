@@ -3,7 +3,6 @@ import numpy as np
 
 import cloudvolume
 
-from multiprocessing import Pool
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 
@@ -17,18 +16,18 @@ from os import listdir
 def list_chunks(json_file):
 	
 	if json_file[-4:] == 'json':
-		file = open(json_file);
-		data = json.load(file);
-		fragments = data["fragments"];
+		file = open(json_file)
+		data = json.load(file)
+		fragments = data["fragments"]
 
-		chunk_list = [];
+		chunk_list = []
 		for i in range(len(fragments)):
-			chunk = fragments[i];
-			chunk_range = chunk.split(":")[2];
-			chunk_list.append(chunk_range);
+			chunk = fragments[i]
+			chunk_range = chunk.split(":")[2]
+			chunk_list.append(chunk_range)
 
 	else:
-		fragments = json_file.split("[")[1][:-2]
+		fragments = json_file.split("[")[1][:-3]
 		fragment_list = fragments.split(",")
 
 		chunk_list = [];
@@ -41,19 +40,18 @@ def list_chunks(json_file):
 	return chunk_list
 
 
-def extract_points_chunk(chunk_range, input_dir, object_id, mip_level, info):
+def extract_points_chunk(chunk_range, input_dir, object_id, mip_level):
 	
 	# Extract chunk from google cloud
-	range3 = chunk_range.split('_');
-	ind = [];
+	range3 = chunk_range.split('_')
+	ind = []
 	for i in range(3):
-		range_i = range3[i];
-		bound = range_i.split('-');
-		ind.append(int(bound[0]));
-		ind.append(int(bound[1]));
+		range_i = range3[i]
+		bound = range_i.split('-')
+		ind.append(int(bound[0]))
+		ind.append(int(bound[1]))
 		
 	print("Extracting chunk...")
-	print(chunk_range)
 	vol = cloudvolume.CloudVolume(input_dir, mip=mip_level, progress=True)
 	min_bound = vol.bounds.minpt
 	max_bound = vol.bounds.maxpt
@@ -68,11 +66,11 @@ def extract_points_chunk(chunk_range, input_dir, object_id, mip_level, info):
 	chunk = chunk[:,:,:,0]
 
 	print("Extracting point cloud...")
-	object_loc = np.where(chunk==object_id);
+	object_loc = np.where(chunk==object_id)
 
-	points = np.zeros([object_loc[0].size,3]);
+	points = np.zeros([object_loc[0].size,3])
 	for i in range(3):
-		points[:,i] = object_loc[i] + ind[2*i];
+		points[:,i] = object_loc[i] + ind[2*i]
 
 
 	return points
@@ -80,28 +78,33 @@ def extract_points_chunk(chunk_range, input_dir, object_id, mip_level, info):
 
 def collect_points(points_list):
 	
+	print("Merging_points...")
+	points_list = list(points_list)
+	
 	for i in range(len(points_list)):
 		if i == 0:
-			points_merged = points_list[i];
+			points_merged = points_list[i]
 
 		else:
-			points_merged = np.concatenate((points_merged,points_list[i]),axis=0);
+			points_merged = np.concatenate((points_merged,points_list[i]),axis=0)
+
 
 	return points_merged
 
 
 def extract_points(input_dir, object_id, mip_level, chunk_list):
 	
-	t0 = time();
+	t0 = time()
 	points_list = []
 
 	for i in range(len(chunk_list)):
-		points = extract_points_chunk(input_dir, object_id, mip_level, chunk_list[i]);
-		points_list.append(points);
+		points = extract_points_chunk(input_dir, object_id, mip_level, chunk_list[i])
+		points_list.append(points)
 
-	object_points = merge_points(points_list);
-	t1 = time();
+	object_points = merge_points(points_list)
+	t1 = time()
 	print(">>>>> Elapsed time : " + str(np.round(t1-t0, decimals=3)))
+
 
 	return object_points
 
@@ -110,17 +113,16 @@ def extract_points_dist(input_dir, object_id, mip_level, chunk_list, n_core=None
 	
 	t0 = time()
 	vol = cloudvolume.CloudVolume(input_dir)
-	with Pool(n_core) as pool:
+	with ProcessPoolExecutor(max_workers=n_core) as pool:
 
-		points_list = pool.map(partial(extract_points_chunk, input_dir=input_dir, object_id=object_id, mip_level=mip_level, info=vol.info), chunk_list)
+		points_list = pool.map(partial(extract_points_chunk, input_dir=input_dir, object_id=object_id, mip_level=mip_level), chunk_list)
 		
-
-
 	object_points = collect_points(points_list)
 
 	t1 = time()
 	print(">>>>> Elapsed time : " + str(np.round(t1-t0, decimals=3)))
 	
+
 	return object_points
 
 
@@ -135,7 +137,6 @@ def save_points(points_merged, output_file):
 def extract_points_object(input_dir, object_id, mip_level, json_file, output_file=''):
 	
 	chunk_list = list_chunks(json_file)
-	print(chunk_list)
 
 	object_points = extract_points_dist(input_dir, object_id, mip_level, chunk_list)
 
