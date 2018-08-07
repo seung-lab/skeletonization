@@ -16,68 +16,52 @@ from time import time
 from os import listdir
 
  
+# Define edges for the graphs
+def create_edges(object_points, DBF, max_bound):
+	"""
+	[INPUT]
+	object_points : n x 3 point cloud format of the object
+	DBF : distance to the boundary map
+	max_bound : maximum coordinates for each dimension with padding
 
-def TEASAR(object_points, parameters, init_root=np.array([]), init_dest=np.array([]), soma=0):
-	## INPUT ##
-	# object_points : n x 3 point cloud format of the object
-	# parameters : list of "scale" and "constant" parameters (first: "scale", second: "constant")
-	#              larger values mean less senstive to detecting small branches
-
-	## OUTPUT ##
-	# skeleton : skeleton object
+	[OUTPUT]
+	nhood_nodes = neighborhood node array (-1 if that node is not included in the object)
+	edge_dist = euclidean distance edges
+	edge_weight = penalty edges
+	"""
 
 	NDIM = object_points.shape[1]
-	object_points = object_points.astype('uint32')
-
-	max_bound = np.max(object_points, axis=0) + 2
+	n = object_points.shape[0]
 
 	object_nodes = Nodes(object_points, max_bound)
-
-	bin_im = np.zeros(max_bound, dtype='bool')
-	bin_im[object_points[:,0],object_points[:,1],object_points[:,2]] = True
-
-
-	n = object_points.shape[0]
-	print('Number of points ::::: ' + str(n))
-
-
-	# Distance to the boundary map
-	print("Creating DBF...")
-	print bin_im.shape
-	DBF = ndimage.distance_transform_edt(bin_im)
-
 
 	# Penalty weight for the edges
 	M = np.max(DBF)**1.01
 	p_v = 100000*(1-DBF/M)**16
-
+	p_v = p_v.astype(np.float32)
 
 	# 26-connectivity
 	nhood_26 = np.zeros([3,3,3], dtype='bool')
-	nhood_26 = np.where(nhood_26==0)
+	nhood_26 = np.where(nhood_26 == 0)
 
-	nhood = np.zeros([nhood_26[0].size,3])
+	nhood = np.zeros([nhood_26[0].size,3], dtype=np.float16)
 	for i in range(NDIM):
 		nhood[:,i] = nhood_26[i]
 	nhood = nhood - 1
-	nhood = np.delete(nhood,find_row(nhood,[0,0,0]),axis=0)
+	nhood = np.delete(nhood, find_row(nhood,[0,0,0]), axis=0)
 
 	n_nhood = nhood.shape[0]	
-	nhood_weight = np.sum(nhood**2,axis=1)**16
+	nhood_weight = np.sum(nhood**2,axis=1)**0.5
 
-	nhood_points = np.zeros([n,3])
-	nhood_nodes = np.ones([n,n_nhood])*-1 
-	obj_node = np.zeros([n,n_nhood])
-	edge_dist = np.zeros([n,n_nhood])
-	edge_weight = np.zeros([n,n_nhood])
+	nhood_points = np.zeros([n,3], dtype=np.float16)
+	nhood_nodes = np.ones([n,n_nhood], dtype=np.int32)*-1 
+	edge_dist = np.zeros([n,n_nhood], dtype=np.float16)
+	edge_weight = np.zeros([n,n_nhood], dtype=np.float32)
 	
 	print("Setting edge weight...")
 	for i in range(n_nhood):
 
-		obj_node[:,i] = np.arange(n)
-
 		nhood_points = object_points + nhood[i,:]
-
 		valid = np.all(nhood_points>=0, axis=1)*np.all(nhood_points<max_bound, axis=1)
 
 		nhood_nodes[valid,i] = object_nodes.sub2node(nhood_points[valid,:])
@@ -87,18 +71,75 @@ def TEASAR(object_points, parameters, init_root=np.array([]), init_dest=np.array
 
 		valid_idx = np.where(valid)[0]
 
-		if soma:
-			edge_weight[valid,i] = nhood_weight[i] * p_v[object_points[valid_idx,0],object_points[valid_idx,1],object_points[valid_idx,2]]
-		else:
-			edge_weight[valid,i] = p_v[object_points[valid_idx,0],object_points[valid_idx,1],object_points[valid_idx,2]]
-		
+		edge_weight[valid,i] = p_v[object_points[valid_idx,0],object_points[valid_idx,1],object_points[valid_idx,2]]
+
+	return (nhood_nodes, edge_dist, edge_weight)
+
+
+# Create euclidean distance graph and penalty graph
+def create_graph(object_points, DBF, max_bound):
+	"""
+	[INPUT]
+	object_points : n x 3 point cloud format of the object
+	DBF : distance to the boundary map
+	max_bound : maximum coordinates for each dimension with padding
+
+	[OUTPUT]
+	G_dist : graph with euclidean distance as edges
+	G : graph with penalty as edges
+	"""
+
+	n = object_points.shape[0]
+
+	nhood_nodes, edge_dist, edge_weight = create_edges(object_points, DBF, max_bound)
+
+	if np.max(edge_weight) < np.finfo(np.float16).max:
+		edge_weight = edge_weight.astype(np.float16)
+
+	valid_edge = np.where(nhood_nodes != -1)
+	rowcol = (valid_edge[1], nhood_nodes[valid_edge[0],valid_edge[1]])
 
 	print("Creating graph...")
-	valid_edge = np.where(nhood_nodes != -1)
-	G_dist = csr_matrix((edge_dist[valid_edge[0],valid_edge[1]],(obj_node[valid_edge[0],valid_edge[1]],nhood_nodes[valid_edge[0],valid_edge[1]])), shape=(n,n))
-	G = csr_matrix((edge_weight[valid_edge[0],valid_edge[1]],(obj_node[valid_edge[0],valid_edge[1]],nhood_nodes[valid_edge[0],valid_edge[1]])), shape=(n,n))
+	G_dist = csr_matrix((edge_dist[valid_edge[0],valid_edge[1]], rowcol), shape=(n,n), dtype=np.float16)
+	G = csr_matrix((edge_weight[valid_edge[0],valid_edge[1]],rowcol), shape=(n,n))
+
+	return G_dist, G
 
 
+# Modified TEASAR
+def TEASAR(object_points, parameters, init_root, init_dest, soma=False):
+	"""
+	[INPUT]
+	object_points : n x 3 point cloud format of the object
+	parameters : list of "scale" and "constant" parameters (first: "scale", second: "constant")
+	             larger values mean less senstive to detecting small branches
+	init_root : initial root points (first object point if not defined)
+	init_dest : destination points to find path to from given init_root (farthest points if not defined.)
+	
+	[OUTPUT]
+	skeleton : skeleton object
+	"""
+
+	NDIM = object_points.shape[1]
+	n = object_points.shape[0]
+	print('Number of points ::::: ' + str(n))
+
+	object_points = object_points.astype(np.uint32)
+	object_nodes = Nodes(object_points, max_bound)
+
+	max_bound = np.max(object_points, axis=0) + 2
+	
+	bin_im = np.zeros(max_bound, dtype='bool')
+	bin_im[object_points[:,0],object_points[:,1],object_points[:,2]] = True
+	
+	# Distance to the boundary map
+	print("Creating DBF...")
+	print bin_im.shape
+	DBF = ndimage.distance_transform_edt(bin_im)
+
+	G_dist, G = create_graph(object_points, DBF, max_bound)
+
+	# Define root nodes
 	root_nodes = object_nodes.sub2node(init_root)
 	n_root = root_nodes.shape[0]
 	
@@ -143,14 +184,13 @@ def TEASAR(object_points, parameters, init_root=np.array([]), init_dest=np.array
 			# Graph shortest path in the weighted graph
 			D_G, pred_G = dijkstra(G, directed=True, indices=root, return_predecessors=True)
 
-
-			# Build skeleton and remove pieces that are completed.
-			# Iterate until entire connected component is completed.
-
+			# Don't process for dust pieces
 			if cnt_comp.shape[0] < 5000:
 				r = r + 1 
 				continue
 
+			# Build skeleton and remove pieces that are completed.
+			# Iterate until entire connected component is completed.
 			path_list = [];
 			while np.any(cnt_comp):
 				print("Finding path...")
@@ -193,9 +233,9 @@ def TEASAR(object_points, parameters, init_root=np.array([]), init_dest=np.array
 					edges_path = path2edge(path)
 					edges = np.concatenate((edges,edges_path))
 
-
 			r = r + 1 
 			c = c + 1
+
 
 	# When destination nodes are set. 
 	else:
@@ -214,12 +254,8 @@ def TEASAR(object_points, parameters, init_root=np.array([]), init_dest=np.array
 					path = find_path(pred_G, dest)
 					path_list.append(path)
 
-
 		for i in range(len(path_list)):
 			path = path_list[i]
-
-			# if soma:
-			# 	path = np.delete(path,np.arange(1,int(path.shape[0]*0.4)))
 
 			if i == 0:
 				nodes = path
@@ -232,106 +268,105 @@ def TEASAR(object_points, parameters, init_root=np.array([]), init_dest=np.array
 					
 
 	if nodes.shape[0] == 0 or edges.shape[0] == 0:
-		skeleton = Skeleton()
+		return Skeleton()
+	
+	# Consolidate nodes and edges
+	nodes = np.unique(nodes)
+	edges = np.unique(edges, axis=0)
 
-	else:
-		# Consolidate nodes and edges
-		nodes = np.unique(nodes)
-		edges = np.unique(edges, axis=0)
+	skel_nodes = object_points[nodes,:]
+	skel_edges = reorder_nodes(nodes,edges)
+	skel_edges = skel_edges.astype('uint32')
+	skel_radii = DBF[skel_nodes[:,0],skel_nodes[:,1],skel_nodes[:,2]]
 
-		skel_nodes = object_points[nodes,:]
-		skel_edges = reorder_nodes(nodes,edges)
-		skel_edges = skel_edges.astype('uint32')
-		skel_radii = DBF[skel_nodes[:,0],skel_nodes[:,1],skel_nodes[:,2]]
+	skeleton = Skeleton(skel_nodes, skel_edges, skel_radii)
 
-		skeleton = Skeleton(skel_nodes, skel_edges, skel_radii)
-
-		skeleton = consolidate_skeleton(skeleton)
-
-
-	return skeleton	
+	return consolidate_skeleton(skeleton)	
 
 
 # Skeletonization
-def skeletonize(object_input, object_id = 1, dsmp_resolution = [1,1,1], parameters = [6,6], init_root = [], init_dest = [], soma = 0):
-	## INPUT ##
-	# object_input : object to skeletonize (N x 3 point cloud or 3D labeled array)
-	# object_id : object ID to skeletonize (Don't need this if object_input is in point cloud format)
-	# dsmp_resolution : downsample resolution
-	# parameters : list of "scale" and "constant" parameters (first: "scale", second: "constant")
-	#              larger values mean less senstive to detecting small branches
-	# init_roots : N x 3 array of initial root coordinates
+def skeletonize(object_input, object_id = 1, dsmp_resolution = [1,1,1], parameters = [6,6], init_root = [], init_dest = [], soma = False):
+	"""
+	[INPUT]
+	object_input : object to skeletonize (N x 3 point cloud or 3D labeled array)
+	object_id : object ID to skeletonize (Don't need this if object_input is in point cloud format)
+	dsmp_resolution : downsample resolution
+	parameters : list of "scale" and "constant" parameters (first: "scale", second: "constant")
+	             larger values mean less senstive to detecting small branches
+	init_roots : N x 3 array of initial root coordinates
 
-	## OUTPUT ##
-	# skeleton : skeleton object
+	[OUTPUT]
+	skeleton : skeleton object
+	"""
 
 	# Don't run skeletonization if the input is an empty array
 	if object_input.shape[0] == 0:
-		skeleton =  Skeleton()
+		return Skeleton()
+	
+	init_root = np.array(init_root)
+	init_dest = np.array(init_dest)
 
-	else:
-		# Convert object_input to point cloud format
-		if object_input.shape[1] == 3: # object input: point cloud
-			obj_points = object_input
-		else:                          # object input: 3D array
-			obj_points = array2point(object_input) 
-
-		# If initial roots is empty, take the first point
-		init_root = np.array(init_root)
-		init_dest = np.array(init_dest)
-
-		if len(init_root) == 0:
-			init_root = obj_points[0,:]
-
-		else:
-			for i in range(init_root.shape[0]):
-				root = init_root[i,:]
-				root_idx = find_row(obj_points, root)
-
-				if root_idx == -1:
-					dist = np.sum((obj_points - root)**2,1)
-					root = obj_points[np.argmin(dist),:]
-					init_root[i,:] = root 
-
-
-		for i in range(init_dest.shape[0]):
-			dest = init_dest[i,:]
-			dest_idx = find_row(obj_points, dest)
-
-			if dest_idx == -1:
-				dist = np.sum((obj_points - dest)**2,1)
-				dest = obj_points[np.argmin(dist),:]
-				init_dest[i,:] = dest 
+	# Convert object_input to point cloud format
+	if object_input.shape[1] == 3: # object input: point cloud
+		obj_points = object_input
+	else:                          # object input: 3D array
+		obj_points = array2point(object_input) 
 
 	
-		# Downsample points
-		if sum(dsmp_resolution) > 3:
-			print(">>>>> Downsample...")
-			obj_points = downsample_points(obj_points, dsmp_resolution)
-			init_root = downsample_points(init_root, dsmp_resolution)
+	# If initial roots is empty, take the first point
+	if len(init_root) == 0:
+		init_root = obj_points[0,:]
 
-			if init_dest.shape[0] != 0:
-				init_dest = downsample_points(init_dest, dsmp_resolution)
+	# If it is not empty, find the closest node in the object.
+	else:
+		for i in range(init_root.shape[0]):
+			root = init_root[i,:]
+			root_idx = find_row(obj_points, root)
 
-		# Convert coordinates to bounding box
-		min_bound = np.min(obj_points, axis=0)
-		obj_points = obj_points - min_bound + 1
-		init_root = init_root - min_bound + 1
+			if root_idx == -1:
+				dist = np.sum((obj_points - root)**2,1)
+				root = obj_points[np.argmin(dist),:]
+				init_root[i,:] = root 
+
+	# Same for destinations
+	for i in range(init_dest.shape[0]):
+		dest = init_dest[i,:]
+		dest_idx = find_row(obj_points, dest)
+
+		if dest_idx == -1:
+			dist = np.sum((obj_points - dest)**2,1)
+			dest = obj_points[np.argmin(dist),:]
+			init_dest[i,:] = dest 
+
+
+	# Downsample points
+	if sum(dsmp_resolution) > 3:
+		print(">>>>> Downsample...")
+		obj_points = downsample_points(obj_points, dsmp_resolution)
+		init_root = downsample_points(init_root, dsmp_resolution)
 
 		if init_dest.shape[0] != 0:
-			init_dest = init_dest - min_bound + 1
+			init_dest = downsample_points(init_dest, dsmp_resolution)
 
 
-		# Skeletonize chunk surrounding object
-		print(">>>>> Building skeleton...")
-		t0 = time()
-		skeleton = TEASAR(obj_points, parameters, init_root, init_dest, soma)
-		t1 = time()
-		print(">>>>> Elapsed time : " + str(np.round(t1-t0, decimals=3)))
+	# Convert coordinates to bounding box
+	min_bound = np.min(obj_points, axis=0)
+	obj_points = obj_points - min_bound + 1
+	init_root = init_root - min_bound + 1
 
-		# Convert coordinates back into original coordinates
-		if skeleton.nodes.shape[0] != 0:
-			skeleton.nodes = upsample_points(skeleton.nodes + min_bound - 1, dsmp_resolution)
+	if init_dest.shape[0] != 0:
+		init_dest = init_dest - min_bound + 1
 
+
+	# Skeletonize chunk surrounding object
+	print(">>>>> Building skeleton...")
+	t0 = time()
+	skeleton = TEASAR(obj_points, parameters, init_root, init_dest, soma)
+	t1 = time()
+	print(">>>>> Elapsed time : " + str(np.round(t1-t0, decimals=3)))
+
+	# Convert coordinates back into original coordinates
+	if skeleton.nodes.shape[0] != 0:
+		skeleton.nodes = upsample_points(skeleton.nodes + min_bound - 1, dsmp_resolution)
 
 	return skeleton
