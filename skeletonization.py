@@ -37,7 +37,7 @@ def create_edges(object_points, DBF, max_bound):
 
 	# Penalty weight for the edges
 	M = np.max(DBF)**1.01
-	p_v = 100000*(1-DBF/M)**16
+	p_v = 1000000*(1-DBF/M)**16
 	p_v = p_v.astype(np.float32)
 
 	# 26-connectivity
@@ -71,7 +71,7 @@ def create_edges(object_points, DBF, max_bound):
 
 		valid_idx = np.where(valid)[0]
 
-		edge_weight[valid,i] = p_v[object_points[valid_idx,0],object_points[valid_idx,1],object_points[valid_idx,2]]
+		edge_weight[valid,i] = nhood_weight[i] * p_v[object_points[valid_idx,0],object_points[valid_idx,1],object_points[valid_idx,2]]
 
 	return (nhood_nodes, edge_dist, edge_weight)
 
@@ -97,11 +97,11 @@ def create_graph(object_points, DBF, max_bound):
 		edge_weight = edge_weight.astype(np.float16)
 
 	valid_edge = np.where(nhood_nodes != -1)
-	rowcol = (valid_edge[1], nhood_nodes[valid_edge[0],valid_edge[1]])
-
+	rowcol = (valid_edge[0], nhood_nodes[valid_edge[0],valid_edge[1]])
+	
 	print("Creating graph...")
 	G_dist = csr_matrix((edge_dist[valid_edge[0],valid_edge[1]], rowcol), shape=(n,n), dtype=np.float16)
-	G = csr_matrix((edge_weight[valid_edge[0],valid_edge[1]],rowcol), shape=(n,n))
+	G = csr_matrix((edge_weight[valid_edge[0],valid_edge[1]], rowcol), shape=(n,n))
 
 	return G_dist, G
 
@@ -124,17 +124,17 @@ def TEASAR(object_points, parameters, init_root, init_dest, soma=False):
 	n = object_points.shape[0]
 	print('Number of points ::::: ' + str(n))
 
+	max_bound = np.max(object_points, axis=0) + 2
+	
 	object_points = object_points.astype(np.uint32)
 	object_nodes = Nodes(object_points, max_bound)
-
-	max_bound = np.max(object_points, axis=0) + 2
 	
 	bin_im = np.zeros(max_bound, dtype='bool')
 	bin_im[object_points[:,0],object_points[:,1],object_points[:,2]] = True
 	
 	# Distance to the boundary map
 	print("Creating DBF...")
-	print bin_im.shape
+	print(bin_im.shape)
 	DBF = ndimage.distance_transform_edt(bin_im)
 
 	G_dist, G = create_graph(object_points, DBF, max_bound)
@@ -180,7 +180,6 @@ def TEASAR(object_points, parameters, init_root, init_dest, soma=False):
 				cnt_comp_im = np.zeros(max_bound, dtype='bool')
 				cnt_comp_im[object_points[cnt_comp,0],object_points[cnt_comp,1],object_points[cnt_comp,2]] = 1
 
-				
 			# Graph shortest path in the weighted graph
 			D_G, pred_G = dijkstra(G, directed=True, indices=root, return_predecessors=True)
 
@@ -204,16 +203,16 @@ def TEASAR(object_points, parameters, init_root, init_dest, soma=False):
 					path_point = object_points[path_node,:]
 
 					d = thr_linear(DBF[path_point[0],path_point[1],path_point[2]], parameters, 500)
-					
-					cube_min = np.zeros(3, dtype='uint32')
+
+					cube_min = np.zeros(3, dtype=np.uint32)
 					cube_min = path_point - d
 					cube_min[cube_min<0] = 0
-					cube_min = cube_min.astype('uint32')
+					cube_min = cube_min.astype(np.uint32)
 					
-					cube_max = np.zeros(3, dtype='uint32')
+					cube_max = np.zeros(3, dtype=np.uint32)
 					cube_max = path_point + d
 					cube_max[cube_max>max_bound] = max_bound[cube_max>max_bound]
-					cube_max = cube_max.astype('uint32')
+					cube_max = cube_max.astype(np.uint32)
 
 					cnt_comp_im[cube_min[0]:cube_max[0],cube_min[1]:cube_max[1],cube_min[2]:cube_max[2]] = 0
 

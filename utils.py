@@ -31,8 +31,9 @@ class Nodes:
 		n = coord.shape[0]
 
 		coord = coord.astype(np.uint32)
-		self.max_bound = max_bound.astype(np.uint32)
-
+		max_bound = max_bound.astype(np.uint32)
+		self.max_bound = max_bound
+		
 		idx = coord[:,0] + max_bound[0]*coord[:,1] + max_bound[0]*max_bound[1]*coord[:,2]
 		
 		idx2node = np.ones(np.prod(max_bound), dtype=np.int32)*-1
@@ -44,7 +45,7 @@ class Nodes:
 		if len(sub_array.shape) == 1:
 			sub_array = np.reshape(sub_array,(1,3))
 
-		sub_array = sub_array.astype(np.int32)
+		sub_array = sub_array.astype(np.uint32)
 
 		max_bound = self.max_bound
 		
@@ -243,3 +244,50 @@ def path2edge(path):
 		edges[i,1] = path[i+1]
 
 	return edges
+
+
+def consolidate_skeleton(skeleton):
+
+	nodes = skeleton.nodes 
+	edges = skeleton.edges
+	radii = skeleton.radii
+
+	if nodes.shape[0] == 0 or edges.shape[0] == 0:
+		skeleton = Skeleton()
+
+	else:
+		# Remove duplicate nodes
+		unique_nodes, unique_idx, unique_counts = np.unique(nodes, axis=0, return_index=True, return_counts=True)
+		unique_edges = np.copy(edges)
+
+		dup_idx = np.where(unique_counts>1)[0]
+		for i in range(dup_idx.shape[0]):
+			dup_node = unique_nodes[dup_idx[i],:]
+			dup_node_idx = find_row(nodes, dup_node)
+
+			for j in range(dup_node_idx.shape[0]-1):
+				start_idx, end_idx = np.where(edges==dup_node_idx[j+1])
+				unique_edges[start_idx, end_idx] = unique_idx[dup_idx[i]]
+
+
+		# Remove unnecessary nodes
+		eff_node_list = np.unique(unique_edges)
+		eff_node_list = eff_node_list.astype('int')
+		
+		eff_nodes = nodes[eff_node_list]
+		eff_radii = radii[eff_node_list]
+
+		eff_edges = np.copy(unique_edges)
+		for i, node in enumerate(eff_node_list, 0):
+			row_idx, col_idx = np.where(unique_edges==node)
+
+			eff_edges[row_idx,col_idx] = i
+
+		eff_edges = np.unique(eff_edges, axis=0)
+
+		skeleton.nodes = eff_nodes
+		skeleton.edges = eff_edges
+		skeleton.radii = eff_radii
+
+
+	return skeleton

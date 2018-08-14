@@ -1,5 +1,5 @@
 import scipy.io as spio
-import cPickle as pickle
+import _pickle as pickle
 
 def save_skeleton(skeleton, filename='./skeleton.pkl'):
 	
@@ -30,6 +30,6 @@ def load_points_mat(mat_file):
 	return p
 
 
-def save_skeleton_mat(skeleton,out_filename='./skeleton.mat'):
+def save_skeleton_mat(skeleton, out_filename='./skeleton.mat'):
 
 	spio.savemat(out_filename, {'skeleton':skeleton})
