@@ -1,5 +1,6 @@
 # skeletonization
-Reconstructed object skeletonization
+Reconstructed object skeletonization.  
+*This repository is outdated. Please refer to https://github.com/seung-lab/kimimaro for skeletonization.*
 
 ## Skeletonization pipeline
 Point cloud generation (object.py) >>> Skeletonization (skeletonize.py) >>> Post-process (postprocess.py)
